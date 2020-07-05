@@ -4,4 +4,6 @@ models/
 checkpoint
 samples
 venv/
+env/
 pong.txt
+

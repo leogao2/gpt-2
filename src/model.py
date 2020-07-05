@@ -5,12 +5,13 @@ from tensorflow.contrib.training import HParams
 def default_hparams():
     return HParams(
         n_vocab=50257,
-        n_ctx=1024,
+        n_ctx=1024 + 32,
         n_embd=768,
         n_head=12,
         n_layer=12,
         res_dropout=0.0,
         attn_dropout=0.0,
+        fixed_attn_block_size=32,
         dtype=tf.float32
     )
 
@@ -79,12 +80,40 @@ def attention_mask(nd, ns, *, dtype):
     m = i >= j - ns + nd
     return tf.cast(m, dtype)
 
-
-def attn(x, scope, n_state, *, past, hparams):
+def attn(x, scope, n_state, *, past, hparams, local=True, block_offset=0):
     assert x.shape.ndims == 3  # Should be [batch, sequence, features]
     assert n_state % hparams.n_head == 0
     if past is not None:
         assert past.shape.ndims == 5  # Should be [batch, 2, heads, sequence, features], where 2 is [k, v]
+
+
+    ## LOCAL ATTENTION
+    
+    # TODO: implement proper past cache. in the meantime, don't pass a past if implementing local attention!!!
+    assert not (local and past is not None)
+
+    x_shape = tf.shape(x)
+    sh_batch = x_shape[0]
+    sh_seq = x_shape[1]
+
+    # input length is past seq + x seq because when sampling, subsequent x is only length 1
+    inp_len = sh_seq + (tf.shape(past)[3] if past is not None else 0)
+    
+    if local:
+        right_pad = hparams.fixed_attn_block_size - ((block_offset + inp_len) % hparams.fixed_attn_block_size)
+        padded_seq = (inp_len // hparams.fixed_attn_block_size + 1) * hparams.fixed_attn_block_size
+        
+        # blocks is 1 more than would otherwise be thanks to padding
+        # there's always one padded block at the end, even if it's entirely padded
+        x = tf.pad(x, tf.stack([
+                tf.constant([0,0]), 
+                tf.stack([block_offset, right_pad], axis=0), 
+                tf.constant([0,0])
+            ], axis=0), "CONSTANT")
+        #x = tf.Print(x, [tf.shape(x)[i] for i in range(len(x.shape.as_list()))])
+        #x = tf.Print(x, [inp_len, right_pad])
+        #x = tf.Print(x, [sh_batch * hparams.fixed_attn_block_size, padded_seq // hparams.fixed_attn_block_size, hparams.n_embd])
+        x = tf.reshape(x, [sh_batch * hparams.fixed_attn_block_size, padded_seq // hparams.fixed_attn_block_size, hparams.n_embd]) # should be [batch * blocks, sequence / blocks, features]
 
     def split_heads(x):
         # From [batch, sequence, features] to [batch, heads, sequence, features]
@@ -126,6 +155,20 @@ def attn(x, scope, n_state, *, past, hparams):
         a = merge_heads(a)
         a = conv1d(a, 'c_proj', n_state, hparams=hparams)
         a = dropout(a, hparams.res_dropout)
+        a = tf.Print(a, [tf.shape(a)[i] for i in range(3)])
+
+        if local:
+            # a :: [batch * blocks, sequence / blocks, features]
+            #a = tf.Print(a, [tf.shape(present)[i] for i in range(5)])
+            #a = tf.Print(a, [tf.shape(a)[i] for i in range(3)])
+            a = tf.reshape(a, [sh_batch, padded_seq, hparams.n_embd])[:, block_offset:-right_pad]
+
+            # TODO: WARNING! present is a PLACEHOLDER and *should not be used*!!!
+            # when sampling, pass None for pasts!
+
+            # present: [batch, 2, heads, 1 (seq), features]
+
+            present = tf.zeros([sh_batch, 2, hparams.n_head, 1, hparams.n_embd // hparams.n_head])
         return a, present
 
 

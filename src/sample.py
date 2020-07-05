@@ -77,7 +77,11 @@ def sample_sequence(*, hparams, length, start_token=None, batch_size=None, conte
         context_output = step(hparams, context[:, :-1])
 
         def body(past, prev, output):
-            next_outputs = step(hparams, prev[:, tf.newaxis], past=past)
+            blocksparse_compat = True
+            if blocksparse_compat:
+                next_outputs = step(hparams, output, past=None)
+            else:
+                next_outputs = step(hparams, prev[:, tf.newaxis], past=past)
             logits = next_outputs['logits'][:, -1, :]  / tf.to_float(temperature)
             if penalize > 0.0:
                 logits = penalize_used(logits, output, penalize=penalize)
@@ -86,6 +90,7 @@ def sample_sequence(*, hparams, length, start_token=None, batch_size=None, conte
             else:
                 logits = top_k_logits(logits, k=top_k, epsilon=epsilon)
             samples = tf.multinomial(logits, num_samples=1, output_dtype=tf.int32)
+            output = tf.Print(output, [tf.shape(output)[i] for i in range(2)])
             return [
                 tf.concat([past, next_outputs['presents']], axis=-2),
                 tf.squeeze(samples, axis=[1]),
