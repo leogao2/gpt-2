@@ -106,7 +106,7 @@ def attn(x, scope, n_state, *, past, hparams, local=True, block_offset=0):
         # True = if the context length perfectly matches up with the blocks, still pad it on the right. 
         # This is good for consistency with the rest of the paddings and on a TPU this shouldn't even matter. 
         dont_pad_aligned = False
-        padded_seq = ((inp_len + hparams.fixed_attn_block_size - (1 ifdont_pad_aligned else 0)) // hparams.fixed_attn_block_size) * hparams.fixed_attn_block_size
+        padded_seq = ((inp_len + hparams.fixed_attn_block_size - (1 if dont_pad_aligned else 0)) // hparams.fixed_attn_block_size) * hparams.fixed_attn_block_size
         
         # blocks is 1 more than would otherwise be thanks to padding
         # there's always one padded block at the end, even if it's entirely padded
