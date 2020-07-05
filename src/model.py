@@ -5,13 +5,14 @@ from tensorflow.contrib.training import HParams
 def default_hparams():
     return HParams(
         n_vocab=50257,
-        n_ctx=1024 + 32,
+        n_ctx=2048,
         n_embd=768,
         n_head=12,
         n_layer=12,
         res_dropout=0.0,
         attn_dropout=0.0,
-        fixed_attn_block_size=32,
+        fixed_attn_block_size=128,
+        layer_offset=16,
         dtype=tf.float32
     )
 
@@ -101,7 +102,11 @@ def attn(x, scope, n_state, *, past, hparams, local=True, block_offset=0):
     
     if local:
         right_pad = hparams.fixed_attn_block_size - ((block_offset + inp_len) % hparams.fixed_attn_block_size)
-        padded_seq = (inp_len // hparams.fixed_attn_block_size + 1) * hparams.fixed_attn_block_size
+
+        # True = if the context length perfectly matches up with the blocks, still pad it on the right. 
+        # This is good for consistency with the rest of the paddings and on a TPU this shouldn't even matter. 
+        dont_pad_aligned = False
+        padded_seq = ((inp_len + hparams.fixed_attn_block_size - (1 ifdont_pad_aligned else 0)) // hparams.fixed_attn_block_size) * hparams.fixed_attn_block_size
         
         # blocks is 1 more than would otherwise be thanks to padding
         # there's always one padded block at the end, even if it's entirely padded
@@ -186,11 +191,11 @@ def dropout(x, pdrop=0.1, train=True):
         x = tf.nn.dropout(x, rate=pdrop)
     return x
 
-def block(x, scope, *, past, hparams):
+def block(x, scope, *, past, hparams, block_offset=0):
     dtype = hparams.dtype if hparams else tf.float32
     with tf.variable_scope(scope, dtype=dtype):
         nx = x.shape[-1].value
-        a, present = attn(norm(x, 'ln_1', hparams=hparams), 'attn', nx, past=past, hparams=hparams)
+        a, present = attn(norm(x, 'ln_1', hparams=hparams), 'attn', nx, past=past, hparams=hparams, block_offset=block_offset)
         x = x + a
         m = mlp(norm(x, 'ln_2', hparams=hparams), 'mlp', nx*4, hparams=hparams)
         x = x + m
@@ -229,7 +234,7 @@ def model(hparams, X, past=None, scope='model', reuse=tf.AUTO_REUSE):
         pasts = tf.unstack(past, axis=1) if past is not None else [None] * hparams.n_layer
         assert len(pasts) == hparams.n_layer
         for layer, past in enumerate(pasts):
-            h, present = block(h, 'h%d' % layer, past=past, hparams=hparams)
+            h, present = block(h, 'h%d' % layer, past=past, hparams=hparams, block_offset=(layer * hparams.layer_offset) % hparams.fixed_attn_block_size)
             if layer == 10:
                 tf.add_to_collection('checkpoints', h)
             presents.append(present)
